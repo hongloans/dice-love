@@ -1,0 +1,13 @@
+.DS_Store
+Thumbs.db
+
+# Love2D save identity data
+save/
+
+# Lua tooling caches
+.luacov
+.luacov.*
+
+# Editors / IDE
+.idea/
+.vscode/
