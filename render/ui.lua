@@ -181,7 +181,7 @@ function M.drawControls(layout, windowW, endTurnEnabled, speedTier, showGridLine
   local printY = y + (bh - th) / 2
   centeredPrint(restartLabel, rx + bh / 2, printY)
 
-  -- Fast-forward / speed: tier 1 = black glyph on light pad, 2 = white on dark, 3 = yellow on darker
+  -- Fast-forward / speed: tier 1 black, 2 white, 3 yellow, 4 red, 5 cyan (instant battle)
   local bgR, bgG, bgB, symR, symG, symB
   if speedTier == 1 then
     bgR, bgG, bgB = 0.88, 0.88, 0.91
@@ -189,9 +189,15 @@ function M.drawControls(layout, windowW, endTurnEnabled, speedTier, showGridLine
   elseif speedTier == 2 then
     bgR, bgG, bgB = 0.2, 0.22, 0.28
     symR, symG, symB = 1, 1, 1
-  else
+  elseif speedTier == 3 then
     bgR, bgG, bgB = 0.12, 0.14, 0.18
     symR, symG, symB = 1, 0.9, 0.2
+  elseif speedTier == 4 then
+    bgR, bgG, bgB = 0.16, 0.08, 0.08
+    symR, symG, symB = 1, 0.35, 0.35
+  else
+    bgR, bgG, bgB = 0.06, 0.14, 0.16
+    symR, symG, symB = 0.35, 0.95, 1
   end
   love.graphics.setColor(bgR, bgG, bgB, 1)
   love.graphics.rectangle("fill", sx, y, bh, bh, 10, 10)
@@ -216,7 +222,7 @@ function M.drawControls(layout, windowW, endTurnEnabled, speedTier, showGridLine
   love.graphics.setColor(1, 1, 1, 1)
 end
 
-function M.drawMenu(windowW, windowH, selectedPlayers)
+function M.drawMenu(windowW, windowH, selectedPlayers, allBotsMode)
   love.graphics.setColor(0.07, 0.09, 0.14, 1)
   love.graphics.rectangle("fill", 0, 0, windowW, windowH)
   love.graphics.setColor(0.55, 0.6, 1, 1)
@@ -247,7 +253,24 @@ function M.drawMenu(windowW, windowH, selectedPlayers)
     centeredPrint(tostring(n), bx + 30, by + 10)
   end
 
-  local startY = windowH * 0.32 + 200
+  local modeY = windowH * 0.32 + 162
+  love.graphics.setColor(0.85, 0.88, 0.95, 1)
+  love.graphics.setFont(font.get(12))
+  love.graphics.print("PLAY MODE", windowW / 2 - 140, modeY - 20)
+  local modeW = 136
+  local m1x = windowW / 2 - 140
+  local m2x = windowW / 2 + 4
+  local isHuman = not allBotsMode
+  love.graphics.setColor(isHuman and 0.28 or 0.2, isHuman and 0.52 or 0.24, isHuman and 0.65 or 0.28, 1)
+  love.graphics.rectangle("fill", m1x, modeY, modeW, 40, 8, 8)
+  love.graphics.setColor((not isHuman) and 0.28 or 0.2, (not isHuman) and 0.52 or 0.24, (not isHuman) and 0.65 or 0.28, 1)
+  love.graphics.rectangle("fill", m2x, modeY, modeW, 40, 8, 8)
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.setFont(font.get(12))
+  centeredPrint("RED PLAYER", m1x + modeW / 2, modeY + 12)
+  centeredPrint("ALL BOTS", m2x + modeW / 2, modeY + 12)
+
+  local startY = windowH * 0.32 + 214
   love.graphics.setColor(0.35, 0.38, 0.65, 1)
   love.graphics.rectangle("fill", windowW / 2 - 140, startY, 280, 56, 12, 12)
   love.graphics.setColor(1, 1, 1, 1)
@@ -257,7 +280,8 @@ function M.drawMenu(windowW, windowH, selectedPlayers)
   love.graphics.setFont(font.get(11))
   love.graphics.setColor(0.45, 0.5, 0.58, 1)
   local ty = startY + 80
-  love.graphics.print("• You are P1. Others are bots.", windowW / 2 - 160, ty)
+  local modeText = allBotsMode and "• All players are bots (autoplay)." or "• You are P1 (Red). Others are bots."
+  love.graphics.print(modeText, windowW / 2 - 160, ty)
   love.graphics.print("• Each colony is 8 adjacent cells.", windowW / 2 - 160, ty + 18)
   love.graphics.print("• Max 20 dice per colony.", windowW / 2 - 160, ty + 36)
   love.graphics.print("• Win by eliminating all opponents.", windowW / 2 - 160, ty + 54)
@@ -337,23 +361,81 @@ function M.drawLoading(windowW, windowH, logs, progress, loadingGrid, loadingCol
   love.graphics.setColor(1, 1, 1, 1)
 end
 
-function M.drawGameOver(windowW, windowH, winner)
+local function drawSeriesChart(x, y, w, h, title, stats, key)
+  love.graphics.setColor(0.13, 0.15, 0.2, 1)
+  love.graphics.rectangle("fill", x, y, w, h, 8, 8)
+  love.graphics.setColor(0.24, 0.27, 0.34, 1)
+  love.graphics.setLineWidth(1)
+  love.graphics.rectangle("line", x, y, w, h, 8, 8)
+  love.graphics.setColor(0.75, 0.8, 0.9, 1)
+  love.graphics.setFont(font.get(10))
+  love.graphics.print(title, x + 8, y + 6)
+
+  if not stats then
+    return
+  end
+
+  local maxLen, maxV = 0, 0
+  for _, p in pairs(stats.players or {}) do
+    local arr = p[key] or {}
+    if #arr > maxLen then maxLen = #arr end
+    for i = 1, #arr do
+      if arr[i] > maxV then maxV = arr[i] end
+    end
+  end
+  if maxLen < 2 or maxV <= 0 then
+    return
+  end
+
+  local px, py = x + 8, y + 22
+  local pw, ph = w - 16, h - 30
+  for _, p in pairs(stats.players or {}) do
+    local arr = p[key] or {}
+    if #arr >= 2 then
+      love.graphics.setColor(p.color[1], p.color[2], p.color[3], 0.95)
+      love.graphics.setLineWidth(1.5)
+      for i = 2, #arr do
+        local x1 = px + ((i - 2) / (maxLen - 1)) * pw
+        local y1 = py + ph - (arr[i - 1] / maxV) * ph
+        local x2 = px + ((i - 1) / (maxLen - 1)) * pw
+        local y2 = py + ph - (arr[i] / maxV) * ph
+        love.graphics.line(x1, y1, x2, y2)
+      end
+    end
+  end
+  love.graphics.setLineWidth(1)
+end
+
+function M.drawGameOver(windowW, windowH, winner, stats)
   love.graphics.setColor(0.04, 0.06, 0.1, 0.88)
   love.graphics.rectangle("fill", 0, 0, windowW, windowH)
   love.graphics.setColor(0.12, 0.14, 0.18, 1)
-  love.graphics.rectangle("fill", windowW / 2 - 220, windowH / 2 - 140, 440, 280, 24, 24)
+  love.graphics.rectangle("fill", windowW / 2 - 450, windowH / 2 - 290, 900, 580, 24, 24)
   love.graphics.setColor(0.55, 0.6, 1, 1)
   love.graphics.setFont(font.get(36))
   local title = winner.id == 0 and "DOMINATION!" or "DEFEATED!"
-  centeredPrint(title, windowW / 2, windowH / 2 - 88)
+  centeredPrint(title, windowW / 2, windowH / 2 - 248)
   love.graphics.setFont(font.get(14))
   love.graphics.setColor(0.65, 0.68, 0.75, 1)
-  centeredPrint(string.format("P%d has conquered all territories.", winner.id + 1), windowW / 2, windowH / 2 - 28)
+  centeredPrint(string.format("P%d has conquered all territories. Battle timeline analytics:", winner.id + 1), windowW / 2, windowH / 2 - 206)
+
+  local gx = windowW / 2 - 420
+  local gy = windowH / 2 - 180
+  local cw = 268
+  local ch = 120
+  local gapX = 16
+  local gapY = 14
+  drawSeriesChart(gx, gy, cw, ch, "Colonies (time)", stats, "colonies")
+  drawSeriesChart(gx + (cw + gapX), gy, cw, ch, "Total Dice (time)", stats, "totalDice")
+  drawSeriesChart(gx + (cw + gapX) * 2, gy, cw, ch, "Rolled Dice (cum)", stats, "rolledDice")
+  drawSeriesChart(gx, gy + ch + gapY, cw, ch, "Rolled Sum (cum)", stats, "rolledSum")
+  drawSeriesChart(gx + (cw + gapX), gy + ch + gapY, cw, ch, "Avg Roll Face", stats, "avgRoll")
+
   love.graphics.setColor(0.95, 0.96, 1, 1)
-  love.graphics.rectangle("fill", windowW / 2 - 120, windowH / 2 + 32, 240, 48, 12, 12)
+  love.graphics.rectangle("fill", windowW / 2 - 120, windowH / 2 + 206, 240, 48, 12, 12)
   love.graphics.setColor(0.08, 0.09, 0.12, 1)
   love.graphics.setFont(font.get(16))
-  centeredPrint("GLORY AWAITS", windowW / 2, windowH / 2 + 44)
+  centeredPrint("GLORY AWAITS", windowW / 2, windowH / 2 + 218)
 end
 
 function M.drawRestartConfirm(windowW, windowH)
@@ -381,7 +463,7 @@ function M.drawRestartConfirm(windowW, windowH)
 end
 
 --- Hit regions for menus / controls; returns action strings for main.lua
-function M.hitTestMenu(windowW, windowH, mx, my, selectedPlayers)
+function M.hitTestMenu(windowW, windowH, mx, my, selectedPlayers, allBotsMode)
   local panelLeft = windowW / 2 - 140
   local panelTop = windowH * 0.32
   for i, n in ipairs({ 2, 3, 4, 5, 6, 7, 8 }) do
@@ -393,7 +475,18 @@ function M.hitTestMenu(windowW, windowH, mx, my, selectedPlayers)
       return "set_players", n
     end
   end
-  local startY = panelTop + 200
+  local modeY = panelTop + 162
+  local modeW = 136
+  local m1x = windowW / 2 - 140
+  local m2x = windowW / 2 + 4
+  if mx >= m1x and mx <= m1x + modeW and my >= modeY and my <= modeY + 40 then
+    return "set_mode", false
+  end
+  if mx >= m2x and mx <= m2x + modeW and my >= modeY and my <= modeY + 40 then
+    return "set_mode", true
+  end
+
+  local startY = panelTop + 214
   local sx = windowW / 2 - 140
   if mx >= sx and mx <= sx + 280 and my >= startY and my <= startY + 56 then
     return "start", selectedPlayers

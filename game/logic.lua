@@ -34,13 +34,15 @@ function M.rollDice(count)
 end
 
 --- Build game state after colony generation (createInitialState in gameLogic.ts).
-function M.createInitialState(grid, colonies, numPlayers)
+--- allBotsMode=true: all players are bots. false: P1 is human (red), others bots.
+function M.createInitialState(grid, colonies, numPlayers, allBotsMode)
+  allBotsMode = allBotsMode == true
   local players = {}
   for i = 1, numPlayers do
     table.insert(players, {
       id = i - 1,
       color = PLAYER_COLORS[i],
-      isBot = i ~= 1,
+      isBot = allBotsMode or (i ~= 1),
       isEliminated = false,
     })
   end
@@ -195,6 +197,8 @@ function M.executeBattle(state, attackerId, defenderId)
   state.battleResult = {
     attackerId = attackerId,
     defenderId = defenderId,
+    attackerOwnerId = attacker.ownerId,
+    defenderOwnerId = defender.ownerId,
     attackerRolls = attackerRolls,
     defenderRolls = defenderRolls,
     winnerId = winnerId,

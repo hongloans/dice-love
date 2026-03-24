@@ -14,6 +14,7 @@ local keyboard = require("input.keyboard")
 local app = {
   mode = "menu",
   selectedPlayers = 2,
+  allBotsMode = false,
   logs = {},
   progress = 0,
   gameState = nil,
@@ -23,13 +24,14 @@ local app = {
   battleTimer = nil,
   botTimer = nil,
   showRestartConfirm = false,
-  --- 1 = slowest (watch), 2 = medium, 3 = original speed; FF button cycles 1→2→3→1
+  --- 1 slowest, 2 medium, 3 original, 4 ultra, 5 instant battle resolution; cycle 1→2→3→4→5→1
   speedTier = 3,
   loadingGrid = nil,
   loadingColonies = nil,
   loadingColonyCount = 0,
   --- When false, cells draw flush; uniform cell grid overlay is off (see # button).
   showGridLines = false,
+  gameStats = nil,
 }
 
 local ww, hh = 1280, 800
@@ -41,6 +43,78 @@ local function findWinner(gs)
     end
   end
   return nil
+end
+
+local function initGameStats(gs)
+  local stats = { step = 0, players = {} }
+  for _, p in ipairs(gs.players) do
+    stats.players[p.id] = {
+      id = p.id,
+      color = p.color,
+      colonies = {},
+      totalDice = {},
+      rolledDice = {},
+      rolledSum = {},
+      avgRoll = {},
+      rolledDiceTotal = 0,
+      rolledSumTotal = 0,
+    }
+  end
+  return stats
+end
+
+local function pushSnapshot(gs, reason)
+  if not app.gameStats then
+    app.gameStats = initGameStats(gs)
+  end
+  local stats = app.gameStats
+  stats.step = stats.step + 1
+  stats.lastReason = reason
+
+  local colonyCount = {}
+  local diceCount = {}
+  for _, p in ipairs(gs.players) do
+    colonyCount[p.id] = 0
+    diceCount[p.id] = 0
+  end
+  for _, c in pairs(gs.colonies) do
+    if colonyCount[c.ownerId] ~= nil then
+      colonyCount[c.ownerId] = colonyCount[c.ownerId] + 1
+      diceCount[c.ownerId] = diceCount[c.ownerId] + c.diceCount
+    end
+  end
+  for _, p in ipairs(gs.players) do
+    local ps = stats.players[p.id]
+    ps.colonies[#ps.colonies + 1] = colonyCount[p.id]
+    ps.totalDice[#ps.totalDice + 1] = diceCount[p.id]
+    ps.rolledDice[#ps.rolledDice + 1] = ps.rolledDiceTotal
+    ps.rolledSum[#ps.rolledSum + 1] = ps.rolledSumTotal
+    local avg = ps.rolledDiceTotal > 0 and (ps.rolledSumTotal / ps.rolledDiceTotal) or 0
+    ps.avgRoll[#ps.avgRoll + 1] = avg
+  end
+end
+
+local function recordBattleRolls(gs)
+  if not app.gameStats or not gs.battleResult then
+    return
+  end
+  local br = gs.battleResult
+  local aId = br.attackerOwnerId
+  local dId = br.defenderOwnerId
+  local a = app.gameStats.players[aId]
+  local d = app.gameStats.players[dId]
+  if a then
+    a.rolledDiceTotal = a.rolledDiceTotal + #br.attackerRolls
+    local s = 0
+    for _, v in ipairs(br.attackerRolls) do s = s + v end
+    a.rolledSumTotal = a.rolledSumTotal + s
+  end
+  if d then
+    d.rolledDiceTotal = d.rolledDiceTotal + #br.defenderRolls
+    local s = 0
+    for _, v in ipairs(br.defenderRolls) do s = s + v end
+    d.rolledSumTotal = d.rolledSumTotal + s
+  end
 end
 
 local function delayMult()
@@ -55,9 +129,13 @@ local function botDelay()
   return constants.BOT_ACTION_DELAY * delayMult()
 end
 
+local function isInstantBattleMode()
+  return app.speedTier == 5
+end
+
 local function cycleSpeedTier()
   local oldM = delayMult()
-  app.speedTier = (app.speedTier % 3) + 1
+  app.speedTier = (app.speedTier % 5) + 1
   local newM = delayMult()
   if oldM > 0 and newM > 0 then
     local ratio = newM / oldM
@@ -67,6 +145,9 @@ local function cycleSpeedTier()
     if app.botTimer then
       app.botTimer = app.botTimer * ratio
     end
+  end
+  if isInstantBattleMode() and app.gameState and app.gameState.phase == "battle-result" then
+    logic.resolveBattleResultPhase(app.gameState)
   end
 end
 
@@ -95,7 +176,9 @@ local function startGeneration(numPlayers)
     app.loadingColonies = colonies
     app.loadingColonyCount = colony.countKeys(colonies)
     app.progress = 100
-    app.gameState = logic.createInitialState(grid, colonies, app.pendingPlayers)
+    app.gameState = logic.createInitialState(grid, colonies, app.pendingPlayers, app.allBotsMode)
+    app.gameStats = initGameStats(app.gameState)
+    pushSnapshot(app.gameState, "start")
     app.postLoadTimer = constants.POST_LOAD_DELAY
   end)
 end
@@ -130,7 +213,13 @@ local function tryHumanCellClick(idx)
     local base = gs.colonies[gs.selectedColonyId]
     if base and base.diceCount > 1 and rules.isAdjacent(gs.selectedColonyId, colonyId, gs) then
       logic.executeBattle(gs, gs.selectedColonyId, colonyId)
-      resetTimersForBattle(gs)
+      recordBattleRolls(gs)
+      pushSnapshot(gs, "battle")
+      if isInstantBattleMode() and gs.phase == "battle-result" then
+        logic.resolveBattleResultPhase(gs)
+      else
+        resetTimersForBattle(gs)
+      end
     end
   end
 end
@@ -145,6 +234,7 @@ local function tryEndTurn()
     return
   end
   logic.handleEndTurn(gs)
+  pushSnapshot(gs, "end-turn")
   app.botTimer = nil
   local nextP = gs.players[gs.currentPlayerIndex + 1]
   if gs.phase == "idle" and nextP.isBot then
@@ -197,6 +287,14 @@ function love.update(dt)
 
   if gs.phase == "battle-result" then
     app.botTimer = nil
+    if isInstantBattleMode() then
+      logic.resolveBattleResultPhase(gs)
+      local p = gs.players[gs.currentPlayerIndex + 1]
+      if gs.phase == "idle" and p.isBot then
+        app.botTimer = botDelay()
+      end
+      return
+    end
     if not app.battleTimer then
       app.battleTimer = battleDelay()
     end
@@ -234,9 +332,20 @@ function love.update(dt)
       local action, a, b = ai.chooseBotAction(gs)
       if action == "attack" then
         logic.executeBattle(gs, a, b)
-        resetTimersForBattle(gs)
+        recordBattleRolls(gs)
+        pushSnapshot(gs, "battle")
+        if isInstantBattleMode() and gs.phase == "battle-result" then
+          logic.resolveBattleResultPhase(gs)
+          local p = gs.players[gs.currentPlayerIndex + 1]
+          if gs.phase == "idle" and p.isBot then
+            app.botTimer = botDelay()
+          end
+        else
+          resetTimersForBattle(gs)
+        end
       elseif action == "end_turn" then
         logic.handleEndTurn(gs)
+        pushSnapshot(gs, "end-turn")
         local nextP = gs.players[gs.currentPlayerIndex + 1]
         if gs.phase == "idle" and nextP.isBot then
           app.botTimer = botDelay()
@@ -250,7 +359,7 @@ function love.draw()
   local layout = ui.computeLayout(ww, hh, app.gameState)
 
   if app.mode == "menu" then
-    ui.drawMenu(ww, hh, app.selectedPlayers)
+    ui.drawMenu(ww, hh, app.selectedPlayers, app.allBotsMode)
   elseif app.mode == "loading" then
     ui.drawLoading(ww, hh, app.logs, app.progress, app.loadingGrid, app.loadingColonyCount, app.showGridLines)
   elseif app.mode == "play" and app.gameState then
@@ -266,7 +375,7 @@ function love.draw()
     if gs.phase == "game-over" then
       local w = findWinner(gs)
       if w then
-        ui.drawGameOver(ww, hh, w)
+        ui.drawGameOver(ww, hh, w, app.gameStats)
       end
     end
 
@@ -282,9 +391,11 @@ function love.mousepressed(x, y, button)
   end
 
   if app.mode == "menu" then
-    local act, n = ui.hitTestMenu(ww, hh, x, y, app.selectedPlayers)
+    local act, n = ui.hitTestMenu(ww, hh, x, y, app.selectedPlayers, app.allBotsMode)
     if act == "set_players" then
       app.selectedPlayers = n
+    elseif act == "set_mode" then
+      app.allBotsMode = n == true
     elseif act == "start" then
       startGeneration(n)
     end
@@ -301,6 +412,7 @@ function love.mousepressed(x, y, button)
     if gs.phase == "game-over" then
       if ui.hitTestGameOver(ww, hh, x, y) == "menu" then
         app.gameState = nil
+        app.gameStats = nil
         app.mode = "menu"
         app.battleTimer = nil
         app.botTimer = nil
@@ -312,6 +424,7 @@ function love.mousepressed(x, y, button)
       local r = ui.hitTestRestartConfirm(ww, hh, x, y)
       if r == "menu" then
         app.gameState = nil
+        app.gameStats = nil
         app.mode = "menu"
         app.showRestartConfirm = false
         app.battleTimer = nil
