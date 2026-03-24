@@ -10,7 +10,7 @@
 
 ### 실행
 ```bash
-cd /Users/hongjiun/Documents/dev/dice-love
+cd dice-love
 love .
 ```
 
